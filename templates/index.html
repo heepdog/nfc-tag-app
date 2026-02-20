@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NFC Tag Reader</title>
+    <link rel="stylesheet" href="/static/nfc.css">
+
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>NFC Tag Reader</h1>
+            <div class="user-info">
+                <span>Welcome, <span id="username"></span></span>
+                <button class="logout-btn" onclick="logout()">Logout</button>
+            </div>
+        </div>
+
+        <div class="main-panel">
+            <div class="mode-toggle">
+                <button class="mode-btn active" onclick="setMode('read')" id="read-mode-btn">Read Mode</button>
+                <button class="mode-btn" onclick="setMode('write')" id="write-mode-btn">Write Mode</button>
+            </div>
+
+            <div class="write-form" id="write-form">
+                <div class="form-group">
+                    <label for="infinity-sn-input">InfinitySN to Write:</label>
+                    <input type="text" id="infinity-sn-input" placeholder="Enter InfinitySN" required>
+                </div>
+            </div>
+
+            <div class="nfc-controls">
+                <button class="nfc-btn" id="nfc-btn" onclick="handleNFC()">
+                    <span id="btn-text">Scan NFC Tag</span>
+                </button>
+            </div>
+
+            <div class="status" id="status">
+                Ready to scan NFC tags
+            </div>
+        </div>
+
+        <div class="readings-panel">
+            <div class="readings-header">
+                <h2>Recent Readings</h2>
+                <button class="refresh-btn" onclick="loadReadings()">Refresh</button>
+            </div>
+            <div class="readings-list" id="readings-list">
+                <div class="no-readings">Loading readings...</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentMode = 'read';
+        let userLocation = null;
+        let isScanning = false;
+
+        // Initialize the application
+        document.addEventListener('DOMContentLoaded', async () => {
+            await loadUserInfo();
+            await loadReadings();
+            checkNFCSupport();
+            requestLocation();
+        });
+
+        async function loadUserInfo() {
+            try {
+                const response = await fetch('/api/user-info');
+                if (response.ok) {
+                    const userInfo = await response.json();
+                    document.getElementById('username').textContent = userInfo.username;
+                } else {
+                    window.location.href = '/login';
+                }
+            } catch (error) {
+                console.error('Failed to load user info:', error);
+                window.location.href = '/login';
+            }
+        }
+
+        function checkNFCSupport() {
+            if (!('NDEFReader' in window)) {
+                showStatus('NFC is not supported on this device or browser. Please use Chrome on Android.', 'error');
+            }
+        }
+
+        function requestLocation() {
+            if ('geolocation' in navigator) {
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        userLocation = {
+                            lat: position.coords.latitude,
+                            lng: position.coords.longitude
+                        };
+                        console.log('Location obtained:', userLocation);
+                    },
+                    (error) => {
+                        console.log('Location access denied or failed:', error);
+                        // Continue without location
+                    }
+                );
+            }
+        }
+
+        function setMode(mode) {
+            currentMode = mode;
+
+            const readBtn = document.getElementById('read-mode-btn');
+            const writeBtn = document.getElementById('write-mode-btn');
+            const writeForm = document.getElementById('write-form');
+            const nfcBtn = document.getElementById('nfc-btn');
+            const btnText = document.getElementById('btn-text');
+
+            if (mode === 'read') {
+                readBtn.classList.add('active');
+                writeBtn.classList.remove('active');
+                writeForm.classList.remove('active');
+                btnText.textContent = 'Scan NFC Tag';
+                showStatus('Ready to read NFC tags', 'info');
+            } else {
+                writeBtn.classList.add('active');
+                readBtn.classList.remove('active');
+                writeForm.classList.add('active');
+                btnText.textContent = 'Write to NFC Tag';
+                showStatus('Ready to write to NFC tags', 'info');
+            }
+        }
+
+        async function handleNFC() {
+            if (!('NDEFReader' in window)) {
+                showStatus('NFC is not supported on this device or browser', 'error');
+                return;
+            }
+
+            if (isScanning) {
+                return; // Prevent multiple concurrent operations
+            }
+
+            if (currentMode === 'read') {
+                await readNFCTag();
+            } else {
+                await writeNFCTag();
+            }
+        }
+
+        async function readNFCTag() {
+            try {
+                isScanning = true;
+                const nfcBtn = document.getElementById('nfc-btn');
+                nfcBtn.disabled = true;
+                document.getElementById('btn-text').textContent = 'Reading...';
+
+                showStatus('Hold your device near an NFC tag to read', 'info');
+
+                const ndef = new NDEFReader();
+                await ndef.scan();
+
+                ndef.onreading = async (event) => {
+                    console.log('NFC tag read:', event);
+
+                    let infinitySN = null;
+
+                    // Process NDEF records
+                    for (const record of event.message.records) {
+                        console.log('Record:', record);
+
+                        if (record.recordType === 'text') {
+                            const textDecoder = new TextDecoder(record.encoding);
+                            const text = textDecoder.decode(record.data);
+                            console.log('Text record:', text);
+
+                            // Try to parse as JSON for structured data
+                            try {
+                                const data = JSON.parse(text);
+                                if (data.InfinitySN) {
+                                    infinitySN = data.InfinitySN;
+                                }
+                            } catch {
+                                // If not JSON, check if it's just the InfinitySN value
+                                if (text.includes('InfinitySN')) {
+                                    infinitySN = text.replace('InfinitySN:', '').trim();
+                                } else {
+                                    // Assume the entire text is the InfinitySN
+                                    infinitySN = text;
+                                }
+                            }
+                        }
+                    }
+
+                    if (infinitySN) {
+                        // Save to database
+                        await saveNFCReading(infinitySN);
+                        showStatus(`Successfully read InfinitySN: ${infinitySN}`, 'success');
+                    } else {
+                        showStatus('No InfinitySN found in NFC tag', 'error');
+                    }
+
+                    resetNFCButton();
+                };
+
+                ndef.onreadingerror = (error) => {
+                    console.error('NFC reading error:', error);
+                    showStatus('Failed to read NFC tag', 'error');
+                    resetNFCButton();
+                };
+
+            } catch (error) {
+                console.error('NFC scan error:', error);
+                showStatus('Failed to start NFC scanning: ' + error.message, 'error');
+                resetNFCButton();
+            }
+        }
+
+        async function writeNFCTag() {
+            const infinitySNInput = document.getElementById('infinity-sn-input');
+            const infinitySN = infinitySNInput.value.trim();
+
+            if (!infinitySN) {
+                showStatus('Please enter an InfinitySN to write', 'error');
+                return;
+            }
+
+            try {
+                isScanning = true;
+                const nfcBtn = document.getElementById('nfc-btn');
+                nfcBtn.disabled = true;
+                document.getElementById('btn-text').textContent = 'Writing...';
+
+                showStatus('Hold your device near an NFC tag to write', 'info');
+
+                const ndef = new NDEFReader();
+
+                // Create NDEF message with the InfinitySN data
+                const ndefMessage = {
+                    records: [{
+                        recordType: "text",
+                        data: JSON.stringify({ InfinitySN: infinitySN })
+                    }]
+                };
+
+                await ndef.write(ndefMessage);
+
+                showStatus(`Successfully wrote InfinitySN: ${infinitySN} to NFC tag`, 'success');
+                infinitySNInput.value = ''; // Clear input
+
+                resetNFCButton();
+
+            } catch (error) {
+                console.error('NFC write error:', error);
+                showStatus('Failed to write to NFC tag: ' + error.message, 'error');
+                resetNFCButton();
+            }
+        }
+
+        function resetNFCButton() {
+            isScanning = false;
+            const nfcBtn = document.getElementById('nfc-btn');
+            nfcBtn.disabled = false;
+            document.getElementById('btn-text').textContent = currentMode === 'read' ? 'Scan NFC Tag' : 'Write to NFC Tag';
+        }
+
+        async function saveNFCReading(infinitySN) {
+            try {
+                const response = await fetch('/api/nfc-data', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        infinity_sn: infinitySN,
+                        location_lat: userLocation ? userLocation.lat : null,
+                        location_lng: userLocation ? userLocation.lng : null
+                    })
+                });
+
+                if (response.ok) {
+                    // Refresh the readings list
+                    await loadReadings();
+                } else {
+                    const error = await response.json();
+                    console.error('Failed to save NFC data:', error);
+                }
+            } catch (error) {
+                console.error('Network error saving NFC data:', error);
+            }
+        }
+
+        async function loadReadings() {
+            try {
+                const response = await fetch('/api/nfc-data');
+                if (response.ok) {
+                    const data = await response.json();
+                    displayReadings(data.readings);
+                } else {
+                    console.error('Failed to load readings');
+                }
+            } catch (error) {
+                console.error('Network error loading readings:', error);
+            }
+        }
+
+        function displayReadings(readings) {
+            const readingsList = document.getElementById('readings-list');
+
+            if (readings.length === 0) {
+                readingsList.innerHTML = '<div class="no-readings">No readings yet. Scan an NFC tag to get started!</div>';
+                return;
+            }
+
+            const readingsHTML = readings.map(reading => {
+                const date = new Date(reading.datetime).toLocaleString();
+                const location = reading.location_lat && reading.location_lng
+                    ? `${reading.location_lat.toFixed(6)}, ${reading.location_lng.toFixed(6)}`
+                    : 'No location';
+
+                return `
+                    <div class="reading-item">
+                        <div class="reading-sn">InfinitySN: ${reading.infinity_sn}</div>
+                        <div class="reading-details">
+                            <span>📅 ${date}</span>
+                            <span>📍 ${location}</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            readingsList.innerHTML = readingsHTML;
+        }
+
+        function showStatus(message, type = 'info') {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = `status ${type}`;
+        }
+
+        async function logout() {
+            try {
+                const response = await fetch('/api/logout', { method: 'POST' });
+                if (response.ok) {
+                    window.location.href = '/login';
+                }
+            } catch (error) {
+                console.error('Logout error:', error);
+                // Force redirect even if logout request fails
+                window.location.href = '/login';
+            }
+        }
+    </script>
+</body>
+
+</html>
