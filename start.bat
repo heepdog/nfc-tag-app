@@ -3,19 +3,29 @@ echo NFC Tag Reader Web Application
 echo ===============================
 echo.
 
-REM Check if Python 3.11 is available
-python3.11 --version >nul 2>&1
-if %errorlevel% neq 0 (
-    echo Error: Python 3.11 not found. Please install Python 3.11 or update the script.
+REM Activate the virtual environment
+if exist venv\Scripts\activate.bat (
+    call venv\Scripts\activate.bat
+    echo Virtual environment activated.
+) else (
+    echo Error: Virtual environment not found in venv folder.
     pause
     exit /b 1
 )
 
-echo Starting application with Python 3.11...
+REM Check if Python is available in venv
+python --version >nul 2>&1
+if %errorlevel% neq 0 (
+    echo Error: Python not found in virtual environment.
+    pause
+    exit /b 1
+)
+
+echo Starting application...
 echo.
 
 REM Start the application
-python3.11 run.py
+python run.py
 
 echo.
 echo Application has stopped.

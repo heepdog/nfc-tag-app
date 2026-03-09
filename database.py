@@ -24,9 +24,16 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
+                is_approved INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        
+        # Add is_approved column if it doesn't exist (migration for existing databases)
+        cursor.execute("PRAGMA table_info(users)")
+        columns = [col[1] for col in cursor.fetchall()]
+        if 'is_approved' not in columns:
+            cursor.execute('ALTER TABLE users ADD COLUMN is_approved INTEGER DEFAULT 0')
         
         # Create nfc_readings table
         cursor.execute('''
@@ -69,12 +76,12 @@ class Database:
             return None  # Username already exists
     
     def verify_user(self, username, password):
-        """Verify user credentials"""
+        """Verify user credentials and check approval status"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
         cursor.execute(
-            'SELECT id, password_hash FROM users WHERE username = ?',
+            'SELECT id, password_hash, is_approved FROM users WHERE username = ?',
             (username,)
         )
         
@@ -82,13 +89,54 @@ class Database:
         conn.close()
         
         if result:
-            user_id, stored_hash = result
+            user_id, stored_hash, is_approved = result
+            
+            # Check if account is approved
+            if not is_approved:
+                return None  # Account not approved yet
+            
             password_bytes = password.encode('utf-8')
             
             if bcrypt.checkpw(password_bytes, stored_hash):
                 return user_id
         
         return None
+    
+    def get_pending_registrations(self):
+        """Get all unapproved user registrations"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT id, username, created_at
+            FROM users
+            WHERE is_approved = 0
+            ORDER BY created_at ASC
+        ''')
+        
+        registrations = cursor.fetchall()
+        conn.close()
+        
+        columns = ['id', 'username', 'created_at']
+        return [dict(zip(columns, reg)) for reg in registrations]
+    
+    def approve_user(self, user_id):
+        """Approve a pending user registration"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('UPDATE users SET is_approved = 1 WHERE id = ?', (user_id,))
+        conn.commit()
+        conn.close()
+    
+    def reject_user(self, user_id):
+        """Reject and delete a pending user registration"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('DELETE FROM users WHERE id = ? AND is_approved = 0', (user_id,))
+        conn.commit()
+        conn.close()
     
     def save_nfc_reading(self, infinity_sn, location_lat, location_lng, user_id):
         """Save NFC reading data to database"""
